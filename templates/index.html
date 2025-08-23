@@ -1,14 +1,91 @@
 <!DOCTYPE html>
-<html lang="ar">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <title>Telegram Bot Massage</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>بوت التليجرام - الإصدار المحسّن</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <h1>مرحبا بك في بوت التليجرام</h1>
-    <p>
-        هذا هو الصفحة الرئيسية للبوت الخاص بك.<br>
-        عدل هذا الملف كما تشاء!
-    </p>
+    <div class="container">
+        <header>
+            <h1>بوت إرسال الرسائل إلى مجموعات التليجرام</h1>
+            <p>الإصدار المحسّن للعمل على Replit بدون مشاكل Asyncio</p>
+        </header>
+        
+        <div class="form-section">
+            <div class="step-indicator">
+                <div class="step active">1</div>
+                <div class="step">2</div>
+                <div class="step">3</div>
+            </div>
+            
+            <h2>تسجيل الدخول إلى التليجرام</h2>
+            
+            <div id="loginForm">
+                <div class="form-group">
+                    <label for="api_id">API ID:</label>
+                    <input type="number" id="api_id" required placeholder="أدخل API ID الخاص بك">
+                </div>
+                
+                <div class="form-group">
+                    <label for="api_hash">API HASH:</label>
+                    <input type="text" id="api_hash" required placeholder="أدخل API HASH الخاص بك">
+                </div>
+                
+                <div class="form-group">
+                    <label for="phone">رقم الهاتف:</label>
+                    <input type="text" id="phone" required placeholder="+212123456789">
+                </div>
+                
+                <button type="button" id="sendCodeBtn">إرسال كود التفعيل</button>
+            </div>
+            
+            <div id="verifyForm" class="hidden">
+                <div class="message info">
+                    تم إرسال كود التفعيل إلى حسابك على التليجرام. يرجى التحقق من الرسائل وإدخال الكود أدناه.
+                </div>
+                
+                <div class="form-group">
+                    <label for="code">كود التفعيل:</label>
+                    <input type="text" id="code" required placeholder="أدخل الكود المكون من 5 أرقام">
+                </div>
+                
+                <button type="button" id="verifyCodeBtn">تحقق وابدأ البوت</button>
+            </div>
+            
+            <div id="botSection" class="hidden">
+                <div class="message success">
+                    تم تسجيل الدخول بنجاح! يمكنك الآن إعداد البوت للإرسال.
+                </div>
+                
+                <div class="form-group">
+                    <label for="groups">روابط المجموعات (سطر لكل مجموعة):</label>
+                    <textarea id="groups" rows="6" placeholder="https://t.me/group1&#10;https://t.me/group2&#10;https://t.me/group3"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="message">نص الرسالة:</label>
+                    <textarea id="message" rows="4" placeholder="أدخل نص الرسالة التي تريد إرسالها إلى المجموعات"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="interval">فترة الإرسال (بالثواني):</label>
+                    <input type="number" id="interval" value="30" min="10">
+                </div>
+                
+                <button type="button" id="startBotBtn">بدء الإرسال</button>
+                <button type="button" id="stopBotBtn" class="hidden">إيقاف الإرسال</button>
+            </div>
+            
+            <div id="statusMessage" class="message info hidden"></div>
+        </div>
+        
+        <footer>
+            <p>تم التطوير باستخدام Telethon وFlask مع حل لمشكلة asyncio</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
-</html>
+                </html>
