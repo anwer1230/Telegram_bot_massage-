@@ -5,12 +5,9 @@
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 """
 
-# حفظ Thread الحقيقي (OS thread) قبل monkey_patch
+# استخدام OS thread حقيقي — بدون gevent monkey patching لتجنب تعارض asyncio
 import threading as _pre_patch_threading
 _OSThread = _pre_patch_threading.Thread
-
-from gevent import monkey
-monkey.patch_all(threads=False)
 
 import os
 import json
@@ -304,17 +301,16 @@ def _get_user_logs(user_id: str, level_filter=None) -> list:
 app = Flask(__name__)
 app.secret_key = os.environ.get("SESSION_SECRET", os.urandom(24))
 
-# إعداد SocketIO
+# إعداد SocketIO — threading mode لتجنب تعارض asyncio/gevent
 socketio = SocketIO(
-    app, 
+    app,
     cors_allowed_origins="*",
-    async_mode='gevent',
-    ping_timeout=10,
-    ping_interval=5,
+    async_mode='threading',
+    ping_timeout=20,
+    ping_interval=10,
     logger=False,
     engineio_logger=False,
-    allow_upgrades=False,
-    transports=['polling']
+    allow_upgrades=True,
 )
 # تفعيل الدفع الفوري للسجلات عبر Socket.IO
 _mem_log_handler._socketio = socketio
