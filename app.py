@@ -8851,6 +8851,145 @@ def tools_pptx_chat():
         return jsonify({'reply': f'❌ خطأ: {e}'})
 
 
+@app.route('/tools/pptx/preview_html_links', methods=['POST'])
+def tools_pptx_preview_html_links():
+    """استخراج الروابط من HTML وجلب عناوينها ومقتطفاتها."""
+    try:
+        data = request.json or {}
+        html = data.get('html', '')
+        if not html:
+            return jsonify({'links': []})
+
+        from bs4 import BeautifulSoup as _BS
+        import requests as _req
+
+        soup = _BS(html, 'lxml')
+        links = []
+        seen = set()
+
+        for a in soup.find_all('a', href=True):
+            href = a['href'].strip()
+            if not href or href.startswith('#') or href in seen:
+                continue
+            seen.add(href)
+            anchor_text = a.get_text(strip=True)[:100]
+            info = {'url': href, 'anchor_text': anchor_text, 'title': '', 'snippet': '', 'error': None}
+
+            if href.startswith('http://') or href.startswith('https://'):
+                try:
+                    r = _req.get(href, timeout=6,
+                                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+                                 allow_redirects=True)
+                    if r.status_code == 200:
+                        page = _BS(r.text[:80000], 'lxml')
+                        t = page.find('title')
+                        info['title'] = t.get_text(strip=True)[:120] if t else ''
+                        paras = [p.get_text(strip=True) for p in page.find_all('p')
+                                 if len(p.get_text(strip=True)) > 40]
+                        info['snippet'] = paras[0][:250] if paras else ''
+                    else:
+                        info['error'] = f'HTTP {r.status_code}'
+                except Exception as ex:
+                    info['error'] = str(ex)[:80]
+            else:
+                info['error'] = 'رابط محلي (لا يمكن جلبه)'
+
+            links.append(info)
+            if len(links) >= 12:
+                break
+
+        return jsonify({'links': links})
+    except Exception as e:
+        return jsonify({'links': [], 'error': str(e)}), 500
+
+
+@app.route('/tools/pptx/from_html', methods=['POST'])
+def tools_pptx_from_html():
+    """تحويل كود HTML مباشرةً إلى ملف PPTX مع دعم جلب محتوى الروابط."""
+    if _pptx_gen is None:
+        return jsonify({'error': 'وحدات PowerPoint غير متاحة — تحقق من سجلات الخادم'}), 500
+    try:
+        data           = request.json or {}
+        html_code      = data.get('html', '')
+        title          = data.get('title', '')
+        theme_color    = data.get('theme_color', 'blue')
+        font_name      = data.get('font_name', 'Traditional Arabic')
+        body_font_size = int(data.get('body_font_size', 22))
+        fetch_links    = bool(data.get('fetch_links', True))
+        cover_data     = data.get('cover_data', None)
+
+        if not html_code.strip():
+            return jsonify({'error': 'الرجاء لصق كود HTML أولاً'}), 400
+
+        html_to_parse = html_code
+
+        # جلب محتوى الروابط الخارجية وإضافتها كأقسام إضافية
+        if fetch_links:
+            from bs4 import BeautifulSoup as _BS2
+            import requests as _req2
+            soup2 = _BS2(html_code, 'lxml')
+            extra_parts = []
+            seen2 = set()
+            for a in soup2.find_all('a', href=True):
+                href = a['href'].strip()
+                if not href.startswith('http') or href in seen2:
+                    continue
+                seen2.add(href)
+                try:
+                    r2 = _req2.get(href, timeout=6,
+                                   headers={'User-Agent': 'Mozilla/5.0'},
+                                   allow_redirects=True)
+                    if r2.status_code == 200:
+                        ps = _BS2(r2.text[:80000], 'lxml')
+                        pt = ps.find('title')
+                        pg_title = pt.get_text(strip=True) if pt else href
+                        paras = [p.get_text(strip=True) for p in ps.find_all('p')
+                                 if len(p.get_text(strip=True)) > 30]
+                        if paras:
+                            bullets = ''.join(f'<li>{p}</li>' for p in paras[:5])
+                            extra_parts.append(
+                                f'<section><h2>{pg_title}</h2><ul>{bullets}</ul></section>'
+                            )
+                except Exception:
+                    pass
+                if len(extra_parts) >= 5:
+                    break
+
+            if extra_parts:
+                insert = '\n'.join(extra_parts)
+                body_end = html_to_parse.rfind('</body>')
+                if body_end != -1:
+                    html_to_parse = html_to_parse[:body_end] + insert + html_to_parse[body_end:]
+                else:
+                    html_to_parse += insert
+
+        # تحليل HTML وبناء شرائح
+        slides_data = _parse_html_slides(html_to_parse)
+        if not slides_data:
+            return jsonify({'error': 'لم يتم العثور على محتوى قابل للتحويل في HTML'}), 400
+
+        if title and slides_data:
+            slides_data[0]['title'] = title
+
+        out_path = _pptx_gen.create_presentation(
+            slides_data=slides_data,
+            theme_color=theme_color,
+            cover_data=cover_data,
+            extracted_images=[],
+            font_name=font_name,
+            body_font_size=body_font_size,
+            ai_images=False,
+            groq_client=None,
+        )
+        filename = os.path.basename(out_path)
+        return jsonify({'success': True, 'filename': filename, 'slides': slides_data})
+
+    except Exception as e:
+        import traceback
+        logger.error(f"HTML to PPTX error: {e}")
+        return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+
 @app.route("/academic")
 def academic_analysis():
     _groq_key = os.environ.get('GROQ_API_KEY', '').strip()
