@@ -503,7 +503,7 @@ def _ensure_shared_login_loop():
                 name='SharedLoginLoop'
             )
             t.start()
-            _SHARED_LOGIN_LOOP_READY.wait(timeout=5)
+            _SHARED_LOGIN_LOOP_READY.wait(timeout=10)
     return _SHARED_LOGIN_LOOP
 
 # بيانات Telegram API (مضمنة مباشرة في الكود)
@@ -1629,8 +1629,9 @@ class TelegramLogin:
             # connection_retries=0 لأننا نتولى إعادة المحاولة بأنفسنا
             self.client = TelegramClient(
                 StringSession(), int(API_ID), API_HASH,
-                connection_retries=0,
-                retry_delay=0,
+                connection_retries=5,
+                retry_delay=2,
+                timeout=30,
             )
 
             # الانتظار: 3 محاولات × 25 ثانية + وقت الانتظار بينها = ~110 ثانية
