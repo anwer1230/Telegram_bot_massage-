@@ -1567,7 +1567,8 @@ class TelegramLogin:
 
     async def _connect(self):
         """الاتصال بخوادم تيليجرام مع إعادة المحاولة — يعمل على الحلقة المشتركة"""
-        max_attempts = 3
+        max_attempts = 5
+        timeout = 40
         for attempt in range(1, max_attempts + 1):
             try:
                 if attempt > 1:
@@ -1575,12 +1576,12 @@ class TelegramLogin:
                     socketio.emit('log_update', {
                         "message": f"🔄 إعادة المحاولة {attempt}/{max_attempts}..."
                     }, to=self.user_id)
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(4)
 
-                await asyncio.wait_for(self.client.connect(), timeout=25)
+                await asyncio.wait_for(self.client.connect(), timeout=timeout)
                 try:
                     self.authenticated = await asyncio.wait_for(
-                        self.client.is_user_authorized(), timeout=10
+                        self.client.is_user_authorized(), timeout=15
                     )
                 except Exception:
                     self.authenticated = False
@@ -1593,7 +1594,7 @@ class TelegramLogin:
                 logger.warning(f"[{self.user_id}] المحاولة {attempt}: الاتصال غير مستقر")
 
             except asyncio.TimeoutError:
-                logger.error(f"[{self.user_id}] المحاولة {attempt}: انتهت المهلة (25s)")
+                logger.error(f"[{self.user_id}] المحاولة {attempt}: انتهت المهلة ({timeout}s)")
                 self.connected = False
                 self.authenticated = False
                 if attempt == max_attempts:
@@ -1626,18 +1627,30 @@ class TelegramLogin:
                 logger.error(f"[{self.user_id}] الحلقة المشتركة غير متاحة")
                 return False
 
-            # connection_retries=0 لأننا نتولى إعادة المحاولة بأنفسنا
-            self.client = TelegramClient(
-                StringSession(), int(API_ID), API_HASH,
+            try:
+                from telethon.network.connection import ConnectionTcpMTProtoRandomizedIntermediate as _ConnType
+            except ImportError:
+                try:
+                    from telethon.network.connection import ConnectionTcpFull as _ConnType
+                except ImportError:
+                    _ConnType = None
+
+            client_kwargs = dict(
                 connection_retries=5,
                 retry_delay=2,
-                timeout=30,
+                timeout=40,
+            )
+            if _ConnType is not None:
+                client_kwargs['connection'] = _ConnType
+            self.client = TelegramClient(
+                StringSession(), int(API_ID), API_HASH,
+                **client_kwargs,
             )
 
-            # الانتظار: 3 محاولات × 25 ثانية + وقت الانتظار بينها = ~110 ثانية
+            # الانتظار: 5 محاولات × 40 ثانية + 4 × 4 ثوانٍ بين المحاولات = ~216 ثانية
             future = asyncio.run_coroutine_threadsafe(self._connect(), self.loop)
             try:
-                future.result(timeout=110)
+                future.result(timeout=150)
             except Exception as e:
                 logger.error(f"[{self.user_id}] فشل start(): {e}")
                 self.connected = False
@@ -9320,6 +9333,28 @@ _start_keepalive()
 @app.route('/ping')
 def route_keepalive():
     return jsonify({"status": "alive", "time": datetime.utcnow().isoformat()})
+
+
+@app.route('/debug/ping')
+def debug_ping():
+    import socket as _dsock
+    results = {}
+    targets = [
+        ('api.telegram.org', 443),
+        ('149.154.167.51', 443),
+        ('91.108.4.0', 443),
+    ]
+    for host, port in targets:
+        try:
+            _dsock.create_connection((host, port), timeout=10)
+            results[f"{host}:{port}"] = "✅ متاح"
+        except Exception as e:
+            results[f"{host}:{port}"] = f"❌ {e}"
+    all_ok = all("✅" in v for v in results.values())
+    return jsonify({
+        "telegram_reachable": all_ok,
+        "checks": results
+    }), 200 if all_ok else 503
 
 
 # ════════════════════════════════════════════════════════════
