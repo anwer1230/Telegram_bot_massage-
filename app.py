@@ -5108,6 +5108,7 @@ class LearningBot:
         self.knowledge = self.load_knowledge()
         self.unknown_requests = []
         self.conversations = {}
+        self.conversations_history = {}   # تاريخ كامل لكل محادثة {conv_key: [{role, text, time}]}
         self.groq_client = None
         try:
             from groq import Groq as _Groq
@@ -5197,28 +5198,57 @@ class LearningBot:
         else:
             return False, "normal"
 
-    async def generate_intelligent_response(self, sender_name: str, text: str, detected_service: str = None, conversation_context: str = None) -> str:
-        """توليد رد ذكي باستخدام الذكاء الاصطناعي"""
+    def _clean_old_history(self, conv_key, max_age=3600):
+        """حذف الرسائل الأقدم من max_age ثانية من تاريخ المحادثة"""
+        if conv_key in self.conversations_history:
+            now = time.time()
+            self.conversations_history[conv_key] = [
+                e for e in self.conversations_history[conv_key]
+                if now - e.get('time', 0) < max_age
+            ]
+            if not self.conversations_history[conv_key]:
+                del self.conversations_history[conv_key]
+
+    async def generate_intelligent_response(self, sender_name: str, text: str, history: list = None, detected_service: str = None) -> str:
+        """توليد رد ذكي غير رسمي مع مراعاة كامل تاريخ المحادثة"""
         if not self.groq_client:
             return self._generate_fallback_response(detected_service)
+
         services_info = "\n".join([
             f"- {s}: {d['description']} (السعر: {d.get('price_range', 'حسب الطلب')}, الوقت: {d.get('time_range', 'حسب الطلب')})"
             for s, d in self.knowledge.items()
         ])
-        context = f"\nسياق المحادثة السابقة: {conversation_context}" if conversation_context else ""
-        system_prompt = f"""أنت مساعد ذكي في مركز سرعة انجاز للخدمات الأكاديمية. لديك المعرفة التالية:
+
+        # بناء سياق المحادثة من التاريخ
+        history_text = ""
+        if history:
+            lines = []
+            for entry in history[-12:]:
+                role = entry.get('role', 'user')
+                msg = entry.get('text', '')
+                if role == 'user':
+                    lines.append(f"{sender_name}: {msg}")
+                else:
+                    lines.append(f"أنا: {msg}")
+            history_text = "\n".join(lines)
+
+        system_prompt = f"""أنت شخص حقيقي وودود يرد على رسائل خاصة بشكل غير رسمي جداً وطبيعي.
+لديك معرفة بهذه الخدمات:
 {services_info}
 
-قواعد الرد:
-1. إذا كان المستخدم يطلب خدمة محددة، اسأل عن التفاصيل: نوع المهمة، عدد الصفحات/الأسئلة، الموعد النهائي
-2. إذا سأل عن السعر، أعطه نطاق سعري حسب الخدمة
-3. إذا سأل عن الوقت، أعطه الوقت المتوقع
-4. ردودك قصيرة ومفيدة (جملتين إلى ثلاث)
-5. استخدم لغة عربية بسيطة وودية
-6. اطلب من المستخدم إرسال الملف أو المهمة إذا لزم الأمر
-{context}
+أسلوب الرد:
+- استخدم عامية خليجية/عربية ودية وطبيعية جداً (مثل: هلا، ابشر، مايهمك، إن شاء الله، كيف أخدمك)
+- ردودك قصيرة ومباشرة — جملة أو جملتين بحد أقصى
+- إذا كانت تحية مثل "السلام عليكم" أو "هلا" أو "مرحبا" → رد بتحية مناسبة فقط
+- إذا سأل عن خدمة → اسأل عن التفاصيل بشكل ودي
+- إذا كان هناك اتفاق سابق (سعر، وقت، دفع) في التاريخ → تذكره وأكده
+- لا تبدو كبوت أو آلة أبداً
+- لا تستخدم ايموجي بكثرة
 
-الخدمة المكتشفة: {detected_service or 'غير محددة'}
+الخدمة المكتشفة في الرسالة الحالية: {detected_service or 'لا شيء محدد'}
+
+سياق المحادثة السابقة:
+{history_text if history_text else "لا توجد رسائل سابقة — هذه أول رسالة."}
 """
         try:
             response = self.groq_client.chat.completions.create(
@@ -5227,8 +5257,8 @@ class LearningBot:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"رسالة من {sender_name}: {text}"}
                 ],
-                max_tokens=300,
-                temperature=0.7,
+                max_tokens=200,
+                temperature=0.85,
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -5268,6 +5298,23 @@ class LearningBot:
     def clear_unknown(self):
         self.unknown_requests = []
 
+    async def _fetch_telegram_history(self, client, chat_id, limit=15):
+        """جلب آخر limit رسالة من Telegram وتحويلها لقائمة تاريخ"""
+        history = []
+        try:
+            async for msg in client.iter_messages(chat_id, limit=limit):
+                if not msg.text:
+                    continue
+                role = 'assistant' if getattr(msg, 'out', False) else 'user'
+                history.insert(0, {
+                    'role': role,
+                    'text': msg.text[:300],
+                    'time': msg.date.timestamp() if msg.date else time.time()
+                })
+        except Exception as e:
+            logger.warning(f"[{self.user_id}] تعذّر جلب تاريخ المحادثة: {e}")
+        return history
+
     async def handle_incoming_message(self, event, client_manager):
         try:
             user_id = self.user_id
@@ -5290,35 +5337,62 @@ class LearningBot:
             sender_name = getattr(sender, 'first_name', '') or getattr(sender, 'username', '') or 'مستخدم'
             sender_id = str(getattr(sender, 'id', ''))
 
-            is_service_req, msg_type = self.is_service_request(text)
+            # تجاهل الإعلانات فقط
+            _, msg_type = self.is_service_request(text)
             if msg_type == 'promo':
                 logger.info(f"Ignoring promo message from {sender_name}")
                 return
 
-            conversation_key = f"{sender_id}_{event.chat_id}"
-            context = self.conversations.get(conversation_key, {}).get('last_response', '')
+            conv_key = f"{sender_id}_{event.chat_id}"
             detected_service = self.detect_service(text)
 
-            response = await self.generate_intelligent_response(sender_name, text, detected_service, context)
+            # ── جلب تاريخ المحادثة من Telegram أولاً ──
+            tg_history = []
+            if client_manager and client_manager.client:
+                tg_history = await self._fetch_telegram_history(
+                    client_manager.client, event.chat_id, limit=15
+                )
 
-            self.conversations[conversation_key] = {
-                'last_request': text,
-                'last_response': response,
-                'timestamp': time.time(),
-                'detected_service': detected_service
-            }
+            # ── دمج تاريخ Telegram مع التاريخ المحلي ──
+            local_history = self.conversations_history.get(conv_key, [])
+            if tg_history:
+                # فضّل تاريخ Telegram إذا متاح (أشمل)
+                combined_history = tg_history
+            else:
+                combined_history = local_history
 
-            now = time.time()
-            to_delete = [k for k, v in self.conversations.items() if now - v.get('timestamp', 0) > 3600]
-            for k in to_delete:
-                del self.conversations[k]
+            # أضف الرسالة الحالية للتاريخ المحلي
+            if conv_key not in self.conversations_history:
+                self.conversations_history[conv_key] = []
+            self.conversations_history[conv_key].append({
+                'role': 'user',
+                'text': text,
+                'time': time.time()
+            })
+            self._clean_old_history(conv_key)
+
+            # ── توليد الرد الذكي ──
+            response = await self.generate_intelligent_response(
+                sender_name, text,
+                history=combined_history,
+                detected_service=detected_service
+            )
+
+            # حفظ ردنا في التاريخ المحلي
+            self.conversations_history[conv_key].append({
+                'role': 'assistant',
+                'text': response,
+                'time': time.time()
+            })
 
             await event.reply(response)
             socketio.emit('log_update', {
-                "message": f"🤖 رد تعليمي لـ {sender_name}: {response[:100]}..."
+                "message": f"🤖 رد ذكي لـ {sender_name}: {response[:120]}"
             }, to=user_id)
+            logger.info(f"[{user_id}] رد على {sender_name}: {response[:80]}")
 
-            if is_private and is_service_req and not detected_service:
+            # تسجيل الطلبات المجهولة للخاص فقط
+            if is_private and not detected_service:
                 self.unknown_requests.append({
                     "text": text[:200],
                     "sender": sender_name,
