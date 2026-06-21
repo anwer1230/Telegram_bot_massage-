@@ -1863,6 +1863,7 @@ class TelegramManager:
     def __init__(self):
         self.client_managers = {}
         self.login_managers = {}
+        self._smart_running = set()   # لمنع تشغيل عمليتين لنفس المجموعة: {user_id_group_id}
 
     def get_client_manager(self, user_id):
         if user_id not in self.client_managers:
@@ -2282,6 +2283,26 @@ class TelegramManager:
 
             entity_obj = self._resolve_entity(client_manager, entity)
 
+            action, _ = self._check_group_protection(user_id, client_manager, entity_obj, entity)
+
+            # ── الإرسال الذكي للمجموعات المحمية ──
+            if action == 'smart':
+                group_id = getattr(entity_obj, 'id', None) or hash(str(entity))
+                key = f"{user_id}_{group_id}"
+                if key in self._smart_running:
+                    return {"success": True, "skipped": False, "smart": True,
+                            "message": "⚠️ عملية ذكية قيد التشغيل لهذه المجموعة، ستُكمل عند انتهائها"}
+                self._smart_running.add(key)
+                import threading as _th
+                _th.Thread(
+                    target=self._run_smart_protected_send,
+                    args=(user_id, client_manager, entity_obj, entity, message, key),
+                    daemon=True,
+                    name=f"SmartSend-{key}"
+                ).start()
+                return {"success": True, "smart": True,
+                        "message": f"🧠 بدأ الإرسال الذكي لـ {entity}"}
+
             final_message = self._maybe_sanitize(user_id, client_manager, entity_obj, entity, message)
             if final_message is None:
                 return {"success": False, "skipped": True,
@@ -2303,8 +2324,9 @@ class TelegramManager:
             settings = load_settings(user_id)
             mode = (settings.get('sanitize_mode') or 'off').lower()
             skip_protected = settings.get('skip_protected_groups', False)
+            protected_mode = (settings.get('protected_mode') or 'skip').lower()
 
-            if mode == 'off' and not skip_protected:
+            if mode == 'off' and not skip_protected and protected_mode != 'smart':
                 return 'send', None
 
             try:
@@ -2315,29 +2337,32 @@ class TelegramManager:
                 logger.warning(f"Group protection check error: {e}")
                 is_prot, reason = False, None
 
-            if is_prot and skip_protected:
-                msg = f"🛡️ تم تخطي المجموعة المحمية: {entity_label}"
-                if reason:
-                    msg += f" ({reason})"
-                socketio.emit('log_update', {"message": msg}, to=user_id)
-                self._send_protection_warning(user_id, entity_label, reason)
-                return 'skip', reason
+            if is_prot:
+                # ── الخيار الجديد: إرسال ذكي ──
+                if protected_mode == 'smart':
+                    socketio.emit('log_update', {
+                        "message": f"🧠 مجموعة محمية: {entity_label} — سيتم الإرسال الذكي (انتظار 10 رسائل)"
+                    }, to=user_id)
+                    return 'smart', reason
 
-            if is_prot and mode in ('smart', 'always'):
-                socketio.emit('log_update', {
-                    "message": f"🛡️ مجموعة محمية: {entity_label} ({reason or 'بوت حماية'}) — سيتم تنقية/تحويل الروابط"
-                }, to=user_id)
-                return 'sanitize', reason
+                if skip_protected or mode == 'skip':
+                    msg = f"🛡️ تم تخطي المجموعة المحمية: {entity_label}"
+                    if reason:
+                        msg += f" ({reason})"
+                    socketio.emit('log_update', {"message": msg}, to=user_id)
+                    self._send_protection_warning(user_id, entity_label, reason)
+                    return 'skip', reason
 
-            if is_prot and mode == 'skip':
-                return 'skip', reason
+                if mode in ('smart', 'always'):
+                    socketio.emit('log_update', {
+                        "message": f"🛡️ مجموعة محمية: {entity_label} ({reason or 'بوت حماية'}) — سيتم تنقية/تحويل الروابط"
+                    }, to=user_id)
+                    return 'sanitize', reason
 
             if mode == 'transform':
                 return 'transform', None
-
             if mode == 'off':
                 return 'send', None
-
             return 'send', None
         except Exception as e:
             logger.warning(f"_check_group_protection error: {e}")
@@ -2378,6 +2403,88 @@ class TelegramManager:
                 pass
         except Exception as e:
             logger.error(f"Failed to send protection warning: {e}")
+
+    def _run_smart_protected_send(self, user_id, client_manager, entity_obj, entity_label, final_message, key):
+        """
+        تُنفذ في خيط منفصل (لا تحجب حلقة الإرسال الرئيسية):
+        1. ترسل "السلام عليكم" كرسالة أولية ثابتة
+        2. تنتظر 10 رسائل من أعضاء آخرين (أو 300 ثانية)
+        3. تعدّل الرسالة إلى final_message
+        """
+        try:
+            if not client_manager or not client_manager.client:
+                socketio.emit('log_update', {
+                    "message": f"❌ فشل الإرسال الذكي لـ {entity_label}: العميل غير متصل"
+                }, to=user_id)
+                return
+
+            # 1. إرسال الرسالة الأولية الثابتة
+            initial_text = "السلام عليكم"
+            logger.info(f"[Smart] إرسال '{initial_text}' إلى {entity_label} للمستخدم {user_id}")
+            msg = client_manager.run_coroutine(
+                client_manager.client.send_message(entity_obj, initial_text)
+            )
+            socketio.emit('log_update', {
+                "message": f"🧠 [Smart] أُرسلت '{initial_text}' إلى {entity_label} — الانتظار حتى 10 رسائل..."
+            }, to=user_id)
+
+            # 2. انتظار 10 رسائل من الآخرين (أو 300 ثانية)
+            waited = 0
+            last_id = msg.id
+            start_time = time.time()
+            timeout_seconds = 300
+            target_messages = 10
+
+            while waited < target_messages and (time.time() - start_time) < timeout_seconds:
+                time.sleep(3)
+                try:
+                    new_msgs = client_manager.run_coroutine(
+                        client_manager.client.get_messages(entity_obj, limit=25, min_id=last_id)
+                    )
+                    others = [m for m in new_msgs if m.id > last_id and not getattr(m, 'out', False)]
+                    if others:
+                        waited += len(others)
+                        last_id = max(m.id for m in others)
+                        logger.info(f"[Smart] {entity_label}: {len(others)} رسالة جديدة (المجموع: {waited}/{target_messages})")
+                        socketio.emit('log_update', {
+                            "message": f"🧠 [Smart] {entity_label}: استقبل {waited}/{target_messages} رسالة"
+                        }, to=user_id)
+                except Exception as e:
+                    logger.error(f"[Smart] خطأ في جلب الرسائل من {entity_label}: {e}")
+                    break
+
+            # 3. تعديل الرسالة إلى النص النهائي
+            try:
+                client_manager.run_coroutine(
+                    client_manager.client.edit_message(entity_obj, msg.id, final_message)
+                )
+                elapsed = int(time.time() - start_time)
+                socketio.emit('log_update', {
+                    "message": f"✅ [Smart] تم تعديل الرسالة في {entity_label} بعد {waited} رسائل ({elapsed}s)"
+                }, to=user_id)
+                logger.info(f"[Smart] اكتمل الإرسال الذكي لـ {entity_label}")
+            except Exception as e:
+                # بعض المجموعات تمنع التعديل — نرسل رسالة جديدة كبديل
+                logger.warning(f"[Smart] تعذّر تعديل الرسالة في {entity_label}: {e}، محاولة إرسال جديدة")
+                try:
+                    client_manager.run_coroutine(
+                        client_manager.client.send_message(entity_obj, final_message)
+                    )
+                    socketio.emit('log_update', {
+                        "message": f"✅ [Smart] أُرسلت رسالة جديدة إلى {entity_label} (التعديل غير مسموح)"
+                    }, to=user_id)
+                except Exception as e2:
+                    socketio.emit('log_update', {
+                        "message": f"❌ [Smart] فشل الإرسال النهائي إلى {entity_label}: {str(e2)[:80]}"
+                    }, to=user_id)
+
+        except Exception as e:
+            logger.error(f"[Smart] خطأ عام في الإرسال الذكي لـ {entity_label}: {e}")
+            socketio.emit('log_update', {
+                "message": f"❌ [Smart] فشل في {entity_label}: {str(e)[:100]}"
+            }, to=user_id)
+        finally:
+            self._smart_running.discard(key)
 
     def _maybe_sanitize(self, user_id, client_manager, entity_obj, entity_label, message):
         """تنقية الرسالة حسب وضع الحماية"""
@@ -3366,7 +3473,8 @@ def api_save_settings():
         'scheduled_time': data.get('scheduled_time', ''),
         'max_retries': int(data.get('max_retries', 5)),
         'auto_reconnect': data.get('auto_reconnect', False),
-        'sanitize_mode': (data.get('sanitize_mode') or 'off').lower()
+        'sanitize_mode': (data.get('sanitize_mode') or 'off').lower(),
+        'protected_mode': (data.get('protected_mode') or 'skip').lower(),
     })
 
     if save_settings(user_id, current_settings):
