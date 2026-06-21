@@ -752,6 +752,22 @@
                                 </div>
                             </div>
 
+                            <!-- خيار الإرسال الذكي للمجموعات المحمية -->
+                            <div class="mb-3">
+                                <label for="protectedMode" class="form-label">
+                                    <i class="fas fa-robot text-primary me-1"></i>
+                                    عند اكتشاف مجموعة محمية (إرسال ذكي)
+                                </label>
+                                <select class="form-select" id="protectedMode">
+                                    <option value="skip"   {{ 'selected' if (settings.protected_mode or 'skip') == 'skip'   else '' }}>🚫 تخطي — لا ترسل إليها</option>
+                                    <option value="sanitize" {{ 'selected' if settings.protected_mode == 'sanitize' else '' }}>🧹 تنقية — أرسل مع حذف الروابط</option>
+                                    <option value="smart" {{ 'selected' if settings.protected_mode == 'smart' else '' }}>🧠 ذكي — أرسل "السلام عليكم" وانتظر 10 رسائل ثم عدّل</option>
+                                </select>
+                                <div class="form-text text-info mt-1" id="protectedModeHint" style="display:none;">
+                                    🧠 <strong>الإرسال الذكي:</strong> يرسل "السلام عليكم" أولاً لتجاوز حماية البوتات، ثم ينتظر حتى 10 رسائل من الأعضاء، ثم يعدّل الرسالة تلقائياً إلى رسالتك الأصلية. يعمل بشكل خلفي دون تأخير باقي المجموعات.
+                                </div>
+                            </div>
+
                             <!-- زر فحص المجموعات -->
                             <div class="mb-3">
                                 <button type="button" class="btn btn-outline-warning btn-sm w-100" id="scanGroupsBtn">
