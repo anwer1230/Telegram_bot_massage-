@@ -1647,6 +1647,14 @@ class TelegramLogin:
                 **client_kwargs,
             )
 
+            # DC1 (91.108.4.0) محظور على بعض استضافات السحابة (Render/Heroku) — نبدأ من DC2
+            # Telethon سيحوّل تلقائياً للـ DC الصحيح بعد المصادقة
+            try:
+                self.client.session.set_dc(2, '149.154.167.51', 443)
+                logger.info(f"[{self.user_id}] 🔀 تم تعيين DC2 كنقطة بداية للاتصال")
+            except Exception as _dc_err:
+                logger.warning(f"[{self.user_id}] تعذّر تعيين DC2: {_dc_err}")
+
             # الانتظار: 5 محاولات × 40 ثانية + 4 × 4 ثوانٍ بين المحاولات = ~216 ثانية
             future = asyncio.run_coroutine_threadsafe(self._connect(), self.loop)
             try:
