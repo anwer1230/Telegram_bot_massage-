@@ -254,7 +254,8 @@ document.addEventListener('DOMContentLoaded', () => {
         scheduled_time: (document.getElementById('scheduledTime') || {}).value || '',
         max_retries: parseInt((document.getElementById('maxRetries') || {}).value || '5'),
         auto_reconnect: (document.getElementById('autoReconnect') || {}).checked || false,
-        sanitize_mode: (document.getElementById('sanitizeMode') || {}).value || 'smart'
+        sanitize_mode: (document.getElementById('sanitizeMode') || {}).value || 'smart',
+        protected_mode: (document.getElementById('protectedMode') || {}).value || 'skip'
       };
       const r = await postJSON('/api/save_settings', data);
       showAlert(r.message || '', r.success ? 'success' : 'danger');
@@ -304,6 +305,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   if (sendTypeEl) {
     sendTypeEl.addEventListener('change', syncSendTypeUI);
+  const protectedModeEl = document.getElementById('protectedMode');
+  if (protectedModeEl) {
+    protectedModeEl.addEventListener('change', () => {
+      const hint = document.getElementById('protectedModeHint');
+      if (hint) hint.style.display = protectedModeEl.value === 'smart' ? 'block' : 'none';
+    });
+  }
     syncSendTypeUI();
   }
 
@@ -559,6 +567,10 @@ function applySettingsToForm(s) {
   set('sendType', s.send_type || 'manual');
   set('scheduledTime', s.scheduled_time || '');
   set('sanitizeMode', s.sanitize_mode || 'smart');
+  set('protectedMode', s.protected_mode || 'skip');
+  // إظهار تلميح الوضع الذكي
+  const hint = document.getElementById('protectedModeHint');
+  if (hint) hint.style.display = (s.protected_mode === 'smart') ? 'block' : 'none';
   set('phone', s.phone || '');
   // Toggle scheduled-time visibility based on the loaded value
   const sendTypeEl = document.getElementById('sendType');
