@@ -2283,6 +2283,7 @@ class TelegramManager:
 
             entity_obj = self._resolve_entity(client_manager, entity)
 
+            # ── استدعاء واحد فقط لفحص الحماية ثم تمريره لـ _maybe_sanitize ──
             action, _ = self._check_group_protection(user_id, client_manager, entity_obj, entity)
 
             # ── الإرسال الذكي للمجموعات المحمية ──
@@ -2303,10 +2304,14 @@ class TelegramManager:
                 return {"success": True, "smart": True,
                         "message": f"🧠 بدأ الإرسال الذكي لـ {entity}"}
 
-            final_message = self._maybe_sanitize(user_id, client_manager, entity_obj, entity, message)
+            # نمرر action مباشرة لتجنب استدعاء _check_group_protection مرة ثانية
+            final_message = self._maybe_sanitize(
+                user_id, client_manager, entity_obj, entity, message,
+                forced_action=action
+            )
             if final_message is None:
                 return {"success": False, "skipped": True,
-                        "message": "تم تخطي الإرسال: الرسالة بعد التنقية أصبحت فارغة"}
+                        "message": "تم تخطي الإرسال: المجموعة محمية أو الرسالة فارغة بعد التنقية"}
 
             result = client_manager.run_coroutine(
                 client_manager.client.send_message(entity_obj, final_message)
@@ -2486,12 +2491,16 @@ class TelegramManager:
         finally:
             self._smart_running.discard(key)
 
-    def _maybe_sanitize(self, user_id, client_manager, entity_obj, entity_label, message):
-        """تنقية الرسالة حسب وضع الحماية"""
+    def _maybe_sanitize(self, user_id, client_manager, entity_obj, entity_label, message, forced_action=None):
+        """تنقية الرسالة حسب وضع الحماية.
+        forced_action: إذا تم تمريره يُتجنب استدعاء _check_group_protection مرة ثانية."""
         try:
-            action, reason = self._check_group_protection(user_id, client_manager, entity_obj, entity_label)
+            if forced_action is not None:
+                action = forced_action
+            else:
+                action, _ = self._check_group_protection(user_id, client_manager, entity_obj, entity_label)
 
-            if action == 'skip':
+            if action in ('skip', 'smart'):
                 return None
 
             if action == 'send':
@@ -4038,19 +4047,26 @@ def api_send_now():
                 except Exception as e:
                     error_msg = str(e)
                     if "banned" in error_msg.lower() or "ban" in error_msg.lower():
-                        error_type = "محظور"
+                        error_type = "محظور من المجموعة"
                     elif "flood" in error_msg.lower():
-                        error_type = "تجاوز حد الإرسال — انتظر"
+                        # استخرج وقت الانتظار إذا كان متاحاً
+                        import re as _re
+                        m = _re.search(r'(\d+)', error_msg)
+                        wait_s = int(m.group(1)) if m else '?'
+                        error_type = f"تجاوز حد الإرسال — انتظر {wait_s} ثانية"
+                    elif "timeout" in error_msg.lower():
+                        error_type = "انتهت مهلة الاتصال (timeout)"
                     elif "private" in error_msg.lower():
-                        error_type = "خاص/محدود"
+                        error_type = "مجموعة خاصة/محدودة"
                     elif "can't write" in error_msg.lower() or "write" in error_msg.lower():
-                        error_type = "غير مسموح بالإرسال"
-                    elif "not found" in error_msg.lower() or "invalid" in error_msg.lower():
-                        error_type = "مجموعة غير موجودة"
+                        error_type = "لا يُسمح بالإرسال في هذه المجموعة"
+                    elif "not found" in error_msg.lower() or "invalid" in error_msg.lower() or "username" in error_msg.lower():
+                        error_type = "المجموعة غير موجودة أو الرابط خاطئ"
+                    elif "يُعاد تشغيله" in error_msg or "restart" in error_msg.lower():
+                        error_type = "العميل يُعاد تشغيله، أعد المحاولة"
                     else:
-                        error_type = error_msg[:60]
+                        error_type = error_msg[:150]  # رسالة خطأ كاملة لتسهيل التشخيص
                     log_user_event(user_id, 'ERROR', f"❌ فشل الإرسال إلى {group}: {error_type}")
-
                     logger.error(f"Send error to {group}: {error_msg}")
                     socketio.emit('log_update', {
                         "message": f"❌ [{i}/{len(groups_list)}] فشل إلى {group}: {error_type}"
